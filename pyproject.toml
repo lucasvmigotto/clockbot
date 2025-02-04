@@ -1,6 +1,6 @@
 [project]
-name = "ponto-check"
-version = "0.1.0"
+name = "clockbot"
+version = "1.0.0"
 description = "Clock in-out check"
 readme = "README.md"
 requires-python = ">=3.12"
