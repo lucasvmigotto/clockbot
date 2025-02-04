@@ -1,0 +1,62 @@
+{
+    "name": "ponto-check",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    "runArgs": [
+        "--name", "vsc-${localWorkspaceFolderBasename}",
+        "--env-file", ".env"
+    ],
+    "mounts": [
+        {
+            "source": "${localWorkspaceFolder}",
+            "target": "/code",
+            "type": "bind"
+        }
+    ],
+    "workspaceFolder": "/code",
+    "updateContentCommand": "uv sync --directory /code",
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "python.defaultInterpreterPath": "~/.venv",
+                "[python]": {
+                    "diffEditor.ignoreTrimWhitespace": false,
+                    "editor.formatOnSave": true,
+                    "editor.defaultFormatter": "charliermarsh.ruff"
+                },
+                "editor.codeActionsOnSave": {
+                    "source.organizeImports.ruff": "explicit"
+                }
+
+            },
+            "extensions": [
+                // Development
+                "almenon.arepl",
+                // Environment
+                "Cardinal90.multi-cursor-case-preserve",
+                "ryu1kn.partial-diff",
+                "christian-kohler.path-intellisense",
+                "JannisX11.batch-rename-extension",
+                "njzy.stats-bar",
+                "tamasfe.even-better-toml",
+                // Utils
+                "humao.rest-client",
+                "mhutchie.git-graph",
+                "ms-azuretools.vscode-docker",
+                // Style and formatting
+                "charliermarsh.ruff",
+                "DavidAnson.vscode-markdownlint",
+                "mohsen1.prettify-json",
+                "EditorConfig.EditorConfig",
+                "ms-python.python",
+                "ms-python.isort",
+                "charliermarsh.ruff",
+                // Language
+                "streetsidesoftware.code-spell-checker",
+                "streetsidesoftware.code-spell-checker-portuguese-brazilian"
+            ]
+        }
+    }
+}
