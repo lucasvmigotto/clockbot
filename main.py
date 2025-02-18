@@ -1,9 +1,13 @@
+from abc import ABC
+from calendar import monthrange
 from datetime import datetime as dt
 from datetime import timedelta as td
 from io import StringIO
 from logging import DEBUG, INFO, Logger, basicConfig, getLogger
 from os import getenv
-from typing import Any
+from types import NoneType
+from typing import Any, Self
+from urllib.parse import urlencode
 
 from bs4 import BeautifulSoup
 from cloudevents.http.event import CloudEvent
@@ -33,24 +37,44 @@ basicConfig(
 )
 logger: Logger = getLogger(__name__)
 
-NOTIFY_ANYWAY: bool = getenv("NOTIFY_ANYWAY", None) is not None
-
-USERNAME: str = getenv("PONTO_USERNAME")
-PASSWORD: str = getenv("PONTO_PASSWORD")
 DISCORD_TOKEN: str = getenv("DISCORD_TOKEN")
 DISCORD_USER_ID: str = getenv("DISCORD_USER_ID")
+PASSWORD: str = getenv("PONTO_PASSWORD")
+RECIPIENT: str = getenv("RECIPIENT")
+SENDER: str = getenv("SENDER")
 URL_BASE: str = getenv("URL_BASE")
+URL_EMAIL: str = getenv("URL_EMAIL")
+USERNAME: str = getenv("PONTO_USERNAME")
 
 REQUIRED_ENVS: list[bool] = [
-    USERNAME,
-    PASSWORD,
     DISCORD_TOKEN,
     DISCORD_USER_ID,
+    PASSWORD,
+    RECIPIENT,
+    SENDER,
     URL_BASE,
+    URL_EMAIL,
+    USERNAME,
 ]
+
 if not all(REQUIRED_ENVS):
     logger.error("Some required env var not provied")
     exit(1)
+
+SUBJECT_TEMPLATE: str = "{date} - Falha de sincronização de ponto eletrônico"
+EMAIL_TEMPLATE: str = """Bom dia,
+
+Notei que houve {errors_len} falha{is_more_than_one} no ponto eletrônico do dia {date}.
+Seguem em anexo o relatório extraído do sistema de ponto eletrônico com a falha detectada, bem como o{is_more_than_one} comprovante{is_more_than_one} do{is_more_than_one} ponto{is_more_than_one} faltante{is_more_than_one}.
+
+At.te, {sender}.
+"""
+
+MESSAGE_TEMPLATE: str = """
+{errors}
+
+[Enviar Email]({email_link})
+"""
 
 HOLIDAYS_COUNTRY: str = getenv("HOLIDAYS_COUNTRY", "BR")
 HOLIDAYS_SUBDIV: str = getenv("HOLIDAYS_SUBDIV", "SP")
@@ -64,9 +88,14 @@ HEADERS: dict[str, str] = {
 }
 
 SKIP_ROWS: int = 2
-DF_COLUMNS: list[str] = ["date", "clockin", "breakin", "breakout", "clockout"]
+DF_COLUMNS: dict[str] = {
+    "date": "Data",
+    "clockin": "Entrada 1",
+    "breakin": "Saída 1",
+    "breakout": "Entrada 2",
+    "clockout": "Saída 2",
+}
 DATE_FORMAT: str = "%d/%m/%y"
-
 
 LOCAL_HOLIDAYS = country_holidays(HOLIDAYS_COUNTRY, subdiv=HOLIDAYS_SUBDIV)
 
@@ -114,62 +143,115 @@ def clean_hours_dataframe(df: DataFrame) -> DataFrame:
     clean: DataFrame = df.copy()
 
     clean = clean.iloc[SKIP_ROWS:, : len(DF_COLUMNS)]
-    clean.columns = DF_COLUMNS
+    clean.columns = DF_COLUMNS.keys()
 
     clean["date"] = pd_to_datetime(
         clean["date"].apply(lambda date: date.split(" - ")[0].strip()),
         format=DATE_FORMAT,
     )
 
-    clean = clean.set_index("date")
-
-    return clean
+    return clean.set_index("date")
 
 
-def get_hours_as_dataframe(
+def get_month_interval(date_ref: dt) -> tuple[dt, dt]:
+    _, last = monthrange(date_ref.year, date_ref.month)
+
+    return (date_ref.replace(day=1), date_ref.replace(day=last))
+
+
+def count_errors(df: DataFrame) -> list[tuple[dt, list[str]]]:
+    return list(
+        filter(
+            lambda errors: len(errors) > 0,
+            [
+                (idx.to_pydatetime(), row.index[row.isna()].to_list())
+                for idx, row in df.iterrows()
+            ],
+        )
+    )
+
+
+def build_errors_list(
+    errors: list[tuple[dt, list[str]]], labels: dict[str, str]
+) -> str:
+    return "\n".join(
+        [
+            f"* **{date_mask(date)}**:\n"
+            + "\n".join([f"  * {labels[occ]}" for occ in err])
+            for date, err in errors
+        ]
+    )
+
+
+def build_gmail_link(base: str, recipient: str, subject: str, content: str) -> str:
+    return f"{base}?" + urlencode(
+        {"tf": "cm", "fs": 1, "to": recipient, "su": subject, "body": content}
+    )
+
+
+class Clock(ABC):
+    def __init__(self: Self):
+        self._URL_BASE: str = URL_BASE
+        self.URL_LOGIN: str = URL_LOGIN
+        self.URL_DATA: str = URL_DATA
+
+
+class ClockSession(Clock):
+    def __init__(self: Self, username: str, password: str):
+        super(ClockSession, self).__init__()
+        self._username = username
+        self._password = password
+        self.session: Session = None
+
+    def __enter__(self: Self):
+        with Session() as session:
+            session.headers.update(HEADERS)
+
+            login_page = BeautifulSoup(session.get(self.URL_LOGIN).content)
+
+            session.post(
+                url=self.URL_LOGIN,
+                data=(
+                    base_fields(login_page) | login_form(self._username, self._password)
+                ),
+            )
+
+            if not session.get(self.URL_DATA).text.find("Cálculos"):
+                raise Exception("Login failed")
+
+            self.session = session
+
+            return self
+
+    def __exit__(self: Self, *errors: Any):
+        if errors:
+            logger.error(errors)
+
+        self.session.close()
+
+
+def check_for_errors(
     username: str, password: str, start_interval: dt, end_interval: dt
-) -> DataFrame:
-    with Session() as session:
-        session.headers.update(HEADERS)
+) -> list[tuple[dt, list[str]]] | NoneType:
+    with ClockSession(username, password) as clock:
+        data_page_get = clock.session.get(clock.URL_DATA)
 
-        login_page = BeautifulSoup(
-            session.get(URL_LOGIN).content, features="html.parser"
-        )
-
-        session.post(
-            url=URL_LOGIN,
-            data=(base_fields(login_page) | login_form(username, password)),
-        )
-
-        data_page_get: Response = session.get(URL_DATA)
-
-        if not data_page_get.text.find("Cálculos"):
-            error_message: str = "Login has failed"
-            logger.error(error_message)
-            raise Exception(error_message)
-
-        data_page: Response = session.post(
-            url=URL_DATA,
+        data_page: Response = clock.session.post(
+            url=clock.URL_DATA,
             data=(
-                base_fields(
-                    BeautifulSoup(data_page_get.content, features="html.parser")
-                )
+                base_fields(BeautifulSoup(data_page_get.content))
                 | date_interval_form(date_mask(start_interval), date_mask(end_interval))
             ),
         )
 
-        if (
-            table := BeautifulSoup(data_page.content, features="html.parser").select(
-                "table"
-            )
-        ) is None:
-            error_message: str = "Hours tables could not be generated"
-            logger.error(error_message)
-            raise Exception(error_message)
+        if (table := BeautifulSoup(data_page.content).select("table")) is None:
+            raise Exception("Table not found")
 
-        hours: DataFrame = pd_read_html(StringIO(table[-1].decode()))[-1]
+        errors_at: list[tuple[dt, list[str]]] = count_errors(
+            clean_hours_dataframe(pd_read_html(StringIO(table[-1].decode()))[-1])
+        )
 
-        return clean_hours_dataframe(hours)
+        return errors_at
 
 
 @client.event
@@ -184,37 +266,43 @@ async def on_ready():
         logger.info("Discord client connected")
 
         logger.debug("Retrieving hours")
-        clock = get_hours_as_dataframe(USERNAME, PASSWORD, LAST_DAY, LAST_DAY)
+        errors = check_for_errors(USERNAME, PASSWORD, LAST_DAY, LAST_DAY)
         logger.debug("Hours retrieved")
 
-        missing = clock.isna().sum(axis=1)
-
         message_to_send: str = None
+        date_masked: str = date_mask(LAST_DAY)
 
-        if missing.sum() != 0:
-            logger.debug(f"Missing hours: {missing}")
-            message_to_send = "\n".join(
-                [
-                    "* **{date}**: {missing}".format(
-                        date=date.strftime("%d/%m/%Y"), missing=hours
-                    )
-                    for date, hours in missing[missing != 0].reset_index().values
-                ]
+        if (errors_len := len(errors)) > 0:
+            logger.debug(f"{errors_len} Missing hours: {errors}")
+
+            message_to_send = MESSAGE_TEMPLATE.format(
+                errors=build_errors_list(errors=errors, labels=DF_COLUMNS),
+                email_link=build_gmail_link(
+                    base=URL_EMAIL,
+                    recipient=RECIPIENT,
+                    subject=SUBJECT_TEMPLATE.format(date=date_masked),
+                    content=EMAIL_TEMPLATE.format(
+                        errors_len=errors_len,
+                        is_more_than_one="s" if errors_len > 1 else "",
+                        date=date_masked,
+                        sender=SENDER,
+                    ),
+                ),
             )
 
         else:
             logger.debug("No missing hours")
-            message_to_send = (
-                f":white_check_mark: - {date_mask(LAST_DAY)}" if NOTIFY_ANYWAY else None
-            )
+            message_to_send = f":white_check_mark: {date_masked}"
 
-        if message_to_send is not None:
-            logger.info(f"Message to send:\n{message_to_send}")
-            user: DiscordUser = await client.fetch_user(DISCORD_USER_ID)
-            await user.send(message_to_send)
+        logger.info(f"Message to send:\n{message_to_send}")
+
+        user: DiscordUser = await client.fetch_user(DISCORD_USER_ID)
+
+        await user.send(message_to_send)
 
     except Exception as err:
-        logger.exception(f"An error occurred: {err}", exc_info=True)
+        error_message: str = f"An error occurred: {err}"
+        logger.exception(error_message, exc_info=True)
 
     finally:
         logger.info("Closing Discord client")
