@@ -11,4 +11,6 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 USER ${USERNAME}
 
+RUN echo '[[ -d $HOME/.venv/bin/ ]] && . $HOME/.venv/bin/activate || echo ".venv not found"' >> ~/.bashrc
+
 WORKDIR /code
