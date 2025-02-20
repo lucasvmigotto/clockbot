@@ -1,5 +1,5 @@
 {
-    "name": "ponto-check",
+    "name": "clockbot",
     "build": {
         "dockerfile": "Dockerfile",
         "context": ".."
