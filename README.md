@@ -68,6 +68,108 @@ A ideia é que esse script seja uma _function_ _triggada_ por um evento de _pub/
     docker exec -it $(docker container ls -aqf 'name=clockbot') bash
     ```
 
+## Deploy
+
+* Preparação do ambiente com criação de tópico _pub/sub_ e _scheduler_:
+
+    ```bash
+    REGION="<Região GCP>"
+    SCHEDULE="<Expressão Cron>"
+    FUNCTION="<Nome da função>"
+    TIMEZONE="America/Sao_Paulo" # Usar padrão https://en.wikipedia.org/wiki/List_of_tz_database_time_zones#List
+    MESSAGE_BODY="Foo Bar"
+
+    # Criar tópico para pub/sub
+    gcloud pubsub topics create "${FUNCTION}"
+
+    # Criar job para publicar no tópico seguindo um agendamento
+    gcloud scheduler job create pubsub "${FUNCTION}" \
+        --location="${REGION}" \
+        --schedule="${SCHEDULE}" \
+        --topic="${FUNCTION}" \
+        --time-zone="${TIMEZONE}" \
+        --message-body="${MESSAGE_BODY}"
+    ```
+
+> Todas os comandos consideram que o diretório atual é o mesmo do projeto.
+
+* Exportar as dependências em um arquivo `requirements.txt`:
+
+    ```bash
+    uv export \
+        --format requirements-txt \
+        --output-file ./requirements.txt \
+        --no-hashes \
+        --no-dev
+    ```
+
+* Criar a _function_:
+
+    ```bash
+    # Valores para serem usados no comando de deploy
+    REGION="<Região GCP>"
+    FUNCTION="<Nome da função>"
+    RUNTIME="python312"
+    SOURCE="$(pwd)"
+    ENTRYPOINT="main"
+    TRIGGER_TOPIC="<Nome do tópico>"
+    SERVICE_ACCOUNT="<Email de service account>"
+
+    # Definição de variávies de ambiente
+    DISCORD_USER_ID_VALUE=<User ID do Discord>
+    URL_BASE_VALUE=<URL Base do sistema de ponto>
+    SENDER_VALUE="<Nome do remetente do email>"
+    RECIPIENT_VALUE="<Destinatário do Email>"
+    GCP_ENV_VARS="DISCORD_USER_ID=${DISCORD_USER_ID_VALUE}"
+    GCP_ENV_VARS="${GCP_ENV_VARS},URL_BASE=${URL_BASE_VALUE}"
+    GCP_ENV_VARS="${GCP_ENV_VARS},SENDER=${SENDER_VALUE}"
+    GCP_ENV_VARS="${GCP_ENV_VARS},RECIPIENT=${RECIPIENT_VALUE}"
+    GCP_ENV_VARS="${GCP_ENV_VARS},LOG_EXECUTION_ID=true"
+
+    # Definir os secrets que serão disponibilizados para a function
+    GCP_SECRETS="CLOCKBOT_AUTH=CLOCKBOT_AUTH:latest"
+    GCP_SECRETS="${GCP_SECRETS},CLOCKBOT_DISCORD_TOKEN=CLOCKBOT_DISCORD_TOKEN:latest"
+
+    # Máximo de instâncias que podem ser criadas
+    MAX_INTANCES=10
+
+    gcloud functions deploy "${FUNCTION}" \
+        --gen2 \
+        --region="${REGION}" \
+        --runtime="${RUNTIME}" \
+        --source="${SOURCE}" \
+        --entry-point="${ENTRYPOINT}" \
+        --trigger-topic="${TRIGGER}" \
+        --run-service-account="${SERVICE_ACCOUNT}" \
+        --service-account="${SERVICE_ACCOUNT}" \
+        --set-env-vars="${GCP_ENV_VARS}" \
+        --set-secrets="${GCP_SECRETS}" \
+        --max-instances=$MAX_INTANCES
+
+    # Redirecionar tráfego para a nova revisão
+    # gcloud run services update-traffic clockbot --to-latest
+    ```
+
+* Listar as revisões desativadas:
+
+    ```bash
+    INACTIVE_REVISIONS=$(gcloud run revisions list \
+        --region="${REGION}" \
+        --service="${FUNCTION_NAME}" \
+        --filter='status.conditions.type.Active:False' \
+        --format='value(metadata.name)') \
+        && echo "${INACTIVE_REVISIONS}"
+    ```
+
+* Remover as revisões desativadas:
+
+    ```bash
+    gcloud run revisions delete \
+        --region="${REGION}" \
+        "${INACTIVE_REVISIONS}"
+    ```
+
+
 ## TODO
 
 * Adicionar instruções e comandos para deploy com `gcloud`;
