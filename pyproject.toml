@@ -1,6 +1,6 @@
 [project]
 name = "clockbot"
-version = "1.1.1"
+version = "1.2.0"
 description = "Clock in-out check"
 readme = "README.md"
 requires-python = ">=3.12"
