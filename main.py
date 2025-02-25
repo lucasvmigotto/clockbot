@@ -313,7 +313,7 @@ class ClockBot(DiscordClient):
                 logger.debug(f"{errors_len} Missing hours: {errors}")
 
                 message_to_send = MESSAGE_TEMPLATE.format(
-                    errors=build_errors_list(errors=errors, labels=DF_COLUMNS),
+                    errors=f_build_errors_list(errors=errors, labels=DF_COLUMNS),
                     email_link=build_gmail_link(
                         base=URL_EMAIL,
                         recipient=RECIPIENT,
